@@ -21,15 +21,15 @@ Text Loading用です。
 [TLE形式]: https://ja.wikipedia.org/wiki/2%E8%A1%8C%E8%BB%8C%E9%81%93%E8%A6%81%E7%B4%A0%E5%BD%A2%E5%BC%8F "2行軌道要素形式は、アメリカ航空宇宙局 (NASA) と北アメリカ航空宇宙防衛司令部 (NORAD) が現在でも使用している、人工衛星の地心座標系におけるケプラー軌道要素のテキスト形式のフォーマットである。"
 
 ### データ確認用 URL
-https://virtualspaceprogram.github.io/cosmorium-external-data/satellites.txt
+https://akinomizuki.github.io/SatelliteData/satellites.txt
 
-https://virtualspaceprogram.github.io/cosmorium-external-data/satellites.png
+https://akinomizuki.github.io/SatelliteData/satellites.png
 
 ### 更新頻度
 [毎時12分ごろに更新。 (1時間に1回更新)](./.github/workflows/build-and-deploy.yaml#L2-L4)
 
 ### 実行ログ
-https://github.com/VirtualSpaceProgram/cosmorium-external-data/actions/workflows/build-and-deploy.yaml
+https://github.com/akinomizuki.github.io/SatelliteData/actions/workflows/build-and-deploy.yaml
 
 ### 取得対象の衛星の変更
 YAML形式の配列で記述された [satellites.yaml] を書き替えます。
