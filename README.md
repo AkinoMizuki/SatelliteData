@@ -29,7 +29,7 @@ https://akinomizuki.github.io/SatelliteData/satellites.png
 [毎時12分ごろに更新。 (1時間に1回更新)](./.github/workflows/build-and-deploy.yaml#L2-L4)
 
 ### 実行ログ
-https://github.com/akinomizuki.github.io/SatelliteData/actions/workflows/build-and-deploy.yaml
+https://github.com/AkinoMizuki/SatelliteData/actions/workflows/build-and-deploy.yaml
 
 ### 取得対象の衛星の変更
 YAML形式の配列で記述された [satellites.yaml] を書き替えます。
