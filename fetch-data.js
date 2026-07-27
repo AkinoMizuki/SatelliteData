@@ -6,8 +6,9 @@ import { Buffer } from 'node:buffer';
 
 const PAGES_DIRECTORY_PATH = './_site/';
 
-const SPACECRAFT_DEFAULT_START_OFFSET_DAYS = 0;
-const SPACECRAFT_DEFAULT_STOP_OFFSET_DAYS = 8;
+const HORIZONS_LOOKUP_API_URL = 'https://ssd.jpl.nasa.gov/api/horizons_lookup.api';
+const HORIZONS_API_URL = 'https://ssd.jpl.nasa.gov/api/horizons.api';
+const SPACECRAFT_STOP_OFFSET_DAYS = 8;
 const MILLISECONDS_PER_DAY = 86400000;
 
 function formatUtcDate(date) {
@@ -27,6 +28,13 @@ function normalizeQuotedParameter(value) {
   }
 
   return value.replace(/^'+|'+$/g, '');
+}
+
+function normalizeLookupName(value) {
+  return String(value ?? '')
+    .replace(/\s*\(spacecraft\)\s*$/i, '')
+    .trim()
+    .toLowerCase();
 }
 
 function parseCsvLine(line) {
@@ -106,7 +114,14 @@ function parseHorizonsVectorSamples(resultText) {
 }
 
 async function fetchJsonObject(url) {
-  const response = await fetch(url);
+  let response;
+
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`${url} の取得中に通信エラーが発生しました: ${error.message}`);
+  }
+
   const responseText = await response.text();
 
   if (!response.ok) {
@@ -126,100 +141,163 @@ async function fetchJsonObject(url) {
   }
 
   if (typeof parsed.error === 'string' && parsed.error.length > 0) {
-    throw new Error(`${url} のHorizons APIエラー: ${parsed.error}`);
+    throw new Error(`${url} のAPIエラー: ${parsed.error}`);
   }
 
   return parsed;
 }
 
-function resolveSpacecraftUrl(entry, now) {
-  const startOffsetDays = Number.isFinite(entry.startOffsetDays)
-    ? entry.startOffsetDays
-    : SPACECRAFT_DEFAULT_START_OFFSET_DAYS;
-  const stopOffsetDays = Number.isFinite(entry.stopOffsetDays)
-    ? entry.stopOffsetDays
-    : SPACECRAFT_DEFAULT_STOP_OFFSET_DAYS;
-
-  if (stopOffsetDays <= startOffsetDays) {
-    throw new Error(`${entry.id} のstopOffsetDaysはstartOffsetDaysより大きくしてください。`);
+function validateSpacecraftRegistration(id, searchName) {
+  if (typeof id !== 'string' || id.trim().length === 0) {
+    throw new Error('出力用IDが空です。');
   }
 
-  const startDate = formatUtcDate(addUtcDays(now, startOffsetDays));
-  const stopDate = formatUtcDate(addUtcDays(now, stopOffsetDays));
-  const requestUrl = new URL(entry.url);
+  if (!/^[A-Za-z0-9_\-]+$/.test(id)) {
+    throw new Error(`${id} の出力用IDには半角英数字、_、-だけを使用してください。`);
+  }
 
+  if (typeof searchName !== 'string' || searchName.trim().length === 0) {
+    throw new Error(`${id} のHorizons検索名が空です。`);
+  }
+}
+
+async function lookupSpacecraft(searchName) {
+  const lookupUrl = new URL(HORIZONS_LOOKUP_API_URL);
+  lookupUrl.searchParams.set('format', 'json');
+  lookupUrl.searchParams.set('group', 'sct');
+  lookupUrl.searchParams.set('sstr', searchName);
+
+  const payload = await fetchJsonObject(lookupUrl.toString());
+  const results = Array.isArray(payload.result) ? payload.result : [];
+
+  if (results.length === 0) {
+    throw new Error(`Horizons Lookupで「${searchName}」に一致する探査機が見つかりませんでした。`);
+  }
+
+  let matches = results;
+
+  if (results.length > 1) {
+    const normalizedSearchName = normalizeLookupName(searchName);
+    const exactMatches = results.filter((item) => {
+      if (normalizeLookupName(item?.name) === normalizedSearchName) {
+        return true;
+      }
+
+      return Array.isArray(item?.alias)
+        && item.alias.some((alias) => normalizeLookupName(alias) === normalizedSearchName);
+    });
+
+    if (exactMatches.length === 1) {
+      matches = exactMatches;
+    }
+  }
+
+  if (matches.length !== 1) {
+    const candidates = results
+      .map((item) => `${item?.name ?? '(名称なし)'} [${item?.spkid ?? 'SPK IDなし'}]`)
+      .join(', ');
+    throw new Error(`Horizons Lookupで「${searchName}」が複数候補になりました: ${candidates}`);
+  }
+
+  const match = matches[0];
+
+  if (typeof match.spkid !== 'string' || match.spkid.trim().length === 0) {
+    throw new Error(`Horizons Lookupの「${searchName}」にSPK IDがありません。`);
+  }
+
+  return {
+    name: typeof match.name === 'string' && match.name.trim().length > 0
+      ? match.name.replace(/\s*\(spacecraft\)\s*$/i, '')
+      : searchName,
+    spkId: match.spkid.trim(),
+    lookupSource: payload.signature?.source ?? 'NASA/JPL Horizons Lookup API',
+    lookupApiVersion: payload.signature?.version ?? '',
+  };
+}
+
+function buildHorizonsVectorUrl(spkId, now) {
+  const startDate = formatUtcDate(now);
+  const stopDate = formatUtcDate(addUtcDays(now, SPACECRAFT_STOP_OFFSET_DAYS));
+  const requestUrl = new URL(HORIZONS_API_URL);
+
+  requestUrl.searchParams.set('format', 'json');
+  requestUrl.searchParams.set('COMMAND', `'${spkId}'`);
+  requestUrl.searchParams.set('OBJ_DATA', "'YES'");
+  requestUrl.searchParams.set('MAKE_EPHEM', "'YES'");
+  requestUrl.searchParams.set('EPHEM_TYPE', "'VECTORS'");
+  requestUrl.searchParams.set('CENTER', "'500@10'");
   requestUrl.searchParams.set('START_TIME', `'${startDate}'`);
   requestUrl.searchParams.set('STOP_TIME', `'${stopDate}'`);
+  requestUrl.searchParams.set('STEP_SIZE', "'1h'");
+  requestUrl.searchParams.set('REF_PLANE', "'ECLIPTIC'");
+  requestUrl.searchParams.set('REF_SYSTEM', "'ICRF'");
+  requestUrl.searchParams.set('VEC_CORR', "'NONE'");
+  requestUrl.searchParams.set('OUT_UNITS', "'AU-D'");
+  requestUrl.searchParams.set('VEC_TABLE', "'2'");
+  requestUrl.searchParams.set('CSV_FORMAT', "'YES'");
 
   return { url: requestUrl.toString(), startDate, stopDate };
 }
 
-function validateSpacecraftEntry(entry, index) {
-  if (entry === null || Array.isArray(entry) || typeof entry !== 'object') {
-    throw new Error(`spacecraft.yamlの${index + 1}件目がオブジェクトではありません。`);
-  }
-
-  for (const property of ['id', 'name', 'url']) {
-    if (typeof entry[property] !== 'string' || entry[property].trim().length === 0) {
-      throw new Error(`spacecraft.yamlの${index + 1}件目に有効な${property}がありません。`);
-    }
-  }
-
-  const requestUrl = new URL(entry.url);
-  if (requestUrl.searchParams.has('START_TIME') || requestUrl.searchParams.has('STOP_TIME')) {
-    throw new Error(`${entry.id} のURLにはSTART_TIMEとSTOP_TIMEを登録しないでください。取得時に自動設定されます。`);
-  }
-}
-
 /**
- * spacecraft.yaml に書かれたJPL Horizons APIを取得し、
- * UdonSharpで読み取りやすい状態ベクトル配列へ変換する。
+ * spacecraft.yaml に書かれた「出力用ID: Horizons検索名」を読み、
+ * Horizons LookupでSPK IDを自動解決して状態ベクトルを取得する。
  *
  * samplesの並び:
  * [Julian Date TDB, X, Y, Z, VX, VY, VZ]
  */
 async function buildSpacecraftJson(pagesDirectory) {
   const yamlUrl = new URL('spacecraft.yaml', import.meta.url);
-  const entries = yaml.load(await fs.readFile(yamlUrl, { encoding: 'utf-8' }));
+  const registrations = yaml.load(await fs.readFile(yamlUrl, { encoding: 'utf-8' }));
 
-  if (!Array.isArray(entries)) {
-    throw new Error('spacecraft.yaml が探査機設定の配列ではありません。');
+  if (registrations === null || Array.isArray(registrations) || typeof registrations !== 'object') {
+    throw new Error('spacecraft.yaml が「出力用ID: Horizons検索名」のYAMLオブジェクトではありません。');
   }
 
   const now = new Date();
   const objects = [];
+  let skippedCount = 0;
 
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    validateSpacecraftEntry(entry, i);
+  for (const [id, searchName] of Object.entries(registrations)) {
+    try {
+      validateSpacecraftRegistration(id, searchName);
+      core.info(`${id} をHorizons Lookupで検索します: ${searchName}`);
 
-    const resolved = resolveSpacecraftUrl(entry, now);
-    core.info(`${entry.id} のHorizonsデータを取得します: ${resolved.url}`);
+      const lookup = await lookupSpacecraft(searchName.trim());
+      const resolved = buildHorizonsVectorUrl(lookup.spkId, now);
+      core.info(`${id} (${lookup.spkId}) のHorizonsデータを取得します: ${resolved.url}`);
 
-    const payload = await fetchJsonObject(resolved.url);
-    const samples = parseHorizonsVectorSamples(payload.result);
-    const requestUrl = new URL(resolved.url);
-    const parameters = requestUrl.searchParams;
+      const payload = await fetchJsonObject(resolved.url);
+      const samples = parseHorizonsVectorSamples(payload.result);
+      const requestUrl = new URL(resolved.url);
+      const parameters = requestUrl.searchParams;
 
-    objects.push({
-      id: entry.id,
-      name: entry.name,
-      source: payload.signature?.source ?? 'NASA/JPL Horizons API',
-      apiVersion: payload.signature?.version ?? '',
-      command: normalizeQuotedParameter(parameters.get('COMMAND')),
-      center: normalizeQuotedParameter(parameters.get('CENTER')),
-      referencePlane: normalizeQuotedParameter(parameters.get('REF_PLANE')),
-      referenceSystem: normalizeQuotedParameter(parameters.get('REF_SYSTEM')),
-      vectorCorrection: normalizeQuotedParameter(parameters.get('VEC_CORR')),
-      units: normalizeQuotedParameter(parameters.get('OUT_UNITS')),
-      timeType: normalizeQuotedParameter(parameters.get('TIME_TYPE')) || 'TDB',
-      startDate: resolved.startDate,
-      stopDate: resolved.stopDate,
-      stepSize: normalizeQuotedParameter(parameters.get('STEP_SIZE')),
-      samples,
-    });
+      objects.push({
+        id,
+        name: lookup.name,
+        searchName: searchName.trim(),
+        source: payload.signature?.source ?? 'NASA/JPL Horizons API',
+        apiVersion: payload.signature?.version ?? '',
+        lookupSource: lookup.lookupSource,
+        lookupApiVersion: lookup.lookupApiVersion,
+        command: normalizeQuotedParameter(parameters.get('COMMAND')),
+        center: normalizeQuotedParameter(parameters.get('CENTER')),
+        referencePlane: normalizeQuotedParameter(parameters.get('REF_PLANE')),
+        referenceSystem: normalizeQuotedParameter(parameters.get('REF_SYSTEM')),
+        vectorCorrection: normalizeQuotedParameter(parameters.get('VEC_CORR')),
+        units: normalizeQuotedParameter(parameters.get('OUT_UNITS')),
+        timeType: normalizeQuotedParameter(parameters.get('TIME_TYPE')) || 'TDB',
+        startDate: resolved.startDate,
+        stopDate: resolved.stopDate,
+        stepSize: normalizeQuotedParameter(parameters.get('STEP_SIZE')),
+        samples,
+      });
 
-    core.info(`${entry.id} の状態ベクトルを${samples.length}件取得しました。`);
+      core.info(`${id} の状態ベクトルを${samples.length}件取得しました。`);
+    } catch (error) {
+      skippedCount++;
+      core.error(`${id} の取得に失敗したため、この探査機だけをスキップします: ${error.message}`);
+    }
   }
 
   const output = {
@@ -234,7 +312,7 @@ async function buildSpacecraftJson(pagesDirectory) {
     JSON.stringify(output)
   );
 
-  core.info(`spacecraft.json を出力しました。探査機数: ${objects.length}`);
+  core.info(`spacecraft.json を出力しました。成功: ${objects.length}件、スキップ: ${skippedCount}件`);
 }
 
 
@@ -251,7 +329,15 @@ async function buildSpacecraftJson(pagesDirectory) {
  * ]
  */
 async function fetchJsonArray(url) {
-  const response = await fetch(url);
+  let response;
+
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    core.error(`${url} の取得中に通信エラーが発生しました: ${error.message}`);
+    return [];
+  }
+
   const responseText = await response.text();
 
   if (!response.ok) {

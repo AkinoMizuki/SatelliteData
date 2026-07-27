@@ -40,10 +40,11 @@ YAML形式の配列で記述された [satellites.yaml] を書き替えます。
 
 探査機リアルタイムトラッキング用データ
 --------------------------------------
-[JPL Horizons API]から取得した探査機の太陽中心・J2000黄道座標の位置速度ベクトルを、JSON形式で返します。
+[JPL Horizons Lookup API]で探査機名からSPK IDを自動解決し、[JPL Horizons API]から太陽中心・J2000黄道座標の位置速度ベクトルを取得してJSON形式で返します。
 
 現在はHAYABUSA2、James Webb Space Telescope（JWST）、Tesla Roadsterを取得します。
 
+[JPL Horizons Lookup API]: https://ssd-api.jpl.nasa.gov/doc/horizons_lookup.html
 [JPL Horizons API]: https://ssd-api.jpl.nasa.gov/doc/horizons.html
 
 ### データ確認用 URL
@@ -52,10 +53,7 @@ https://akinomizuki.github.io/SatelliteData/spacecraft.json
 ### 更新範囲
 GitHub Actions実行日のUTC日付から8日後までを、1時間間隔で取得します。
 
-`spacecraft.yaml`に登録するURLには、`START_TIME`と`STOP_TIME`を記述しません。ビルド時に次の日時が自動的に追加されます。
-
-- `START_TIME`: GitHub Actions実行日のUTC日付
-- `STOP_TIME`: 実行日の8日後
+日時、API URL、SPK ID、座標系、単位は`fetch-data.js`側で自動設定します。`spacecraft.yaml`には記述しません。
 
 ### 出力形式
 `spacecraft.json`の各サンプルは、次の順序です。
@@ -64,18 +62,32 @@ GitHub Actions実行日のUTC日付から8日後までを、1時間間隔で取�
 [jdTdb, x, y, z, vx, vy, vz]
 ```
 
-現在の探査機設定では、位置の単位はAU、速度の単位はAU/日です。
+位置の単位はAU、速度の単位はAU/日です。
 
 ### 取得対象の探査機の変更
-YAML形式で記述された [spacecraft.yaml] に、`id`、`name`、Horizons APIの`url`を追加します。
+[spacecraft.yaml]へ、次の形式で1行追加します。
 
 ```yaml
-- id: HAYABUSA2
-  name: HAYABUSA2
-  url: "https://ssd.jpl.nasa.gov/api/horizons.api?format=json&COMMAND=%27-37%27&..."
+出力用ID: JPL Horizonsで検索する探査機名
 ```
 
-URLには`START_TIME`と`STOP_TIME`を含めません。通常は既存設定を複製し、`id`、`name`、URL内の`COMMAND`を対象探査機へ変更します。
+現在の登録内容は次のとおりです。
+
+```yaml
+HAYABUSA2: Hayabusa 2
+JWST: JWST
+TESLA_ROADSTER: Tesla Roadster
+```
+
+例えばVoyager 1を追加する場合は、次の1行を追加します。
+
+```yaml
+VOYAGER1: Voyager 1
+```
+
+Horizons Lookupで対象が見つからない、複数候補になった、API取得に失敗した、または状態ベクトルを解析できない場合は、その探査機だけをスキップして残りの対象を出力します。エラー内容はGitHub Actionsのログへ記録されます。
+
+`spacecraft.yaml`自体がYAMLとして不正、またはルート形式が異なる場合は、設定ファイル全体の誤りとしてビルドを停止します。
 
 ※masterブランチへのpush権限が必要。
 
