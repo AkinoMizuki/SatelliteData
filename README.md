@@ -53,7 +53,7 @@ https://akinomizuki.github.io/SatelliteData/spacecraft.json
 ### 更新範囲
 GitHub Actions実行日のUTC日付から8日後までを、1時間間隔で取得します。
 
-日時、API URL、SPK ID、座標系、単位は`fetch-data.js`側で自動設定します。`spacecraft.yaml`には記述しません。
+日時、API URL、座標系、単位は`fetch-data.js`側で自動設定します。通常の対象ではSPK IDもHorizons Lookupから自動解決します。
 
 ### 出力形式
 `spacecraft.json`の各サンプルは、次の順序です。
@@ -76,16 +76,33 @@ GitHub Actions実行日のUTC日付から8日後までを、1時間間隔で取�
 ```yaml
 HAYABUSA2: Hayabusa 2
 JWST: JWST
-TESLA_ROADSTER: Tesla Roadster
+
+# Lookupで検索できない対象のみnameとcommandを指定
+TESLA_ROADSTER:
+  name: Tesla Roadster
+  command: "-143205"
 ```
 
-例えばVoyager 1を追加する場合は、次の1行を追加します。
+例えばVoyager 1を追加する場合は、通常どおり次の1行だけを追加します。
 
 ```yaml
 VOYAGER1: Voyager 1
 ```
 
-Horizons Lookupで対象が見つからない、複数候補になった、API取得に失敗した、または状態ベクトルを解析できない場合は、その探査機だけをスキップして残りの対象を出力します。エラー内容はGitHub Actionsのログへ記録されます。
+Horizons Lookupで検索できない対象だけ、`name`と`command`を指定します。対象固有のIDは`fetch-data.js`へベタ書きせず、登録情報を`spacecraft.yaml`へ集約します。
+
+### 通信節約と前回データの継続使用
+GitHub Actionsは、最初に公開済みの`spacecraft.json`を1回読み込みます。
+
+同じUTC日付のデータが既に公開されている探査機は、そのデータをそのまま再利用し、Horizons Lookup APIとHorizons APIへの通信を行いません。このため、GitHub Actions自体は毎時実行されても、探査機データのJPL通信は原則としてUTC日付が変わった最初の実行時だけです。
+
+UTC日付が変わった場合も、前回データに保存されている`command`（SPK ID）を再利用できる対象はHorizons Lookup APIを省略し、状態ベクトル取得だけを行います。
+
+JPL APIへの通信は、通信例外またはHTTP 408/425/429/500/502/503/504の場合に最大5回試行します（初回＋再試行4回）。再試行間隔は2秒、5秒、15秒、30秒です。
+
+新しい状態ベクトルを取得できなかった場合は、該当する探査機について公開済みの前回データを`spacecraft.json`へ残します。前回データを使用した対象IDは、トップレベルの`staleObjectIds`へ記録されます。前回データも存在しない場合だけ、その探査機をスキップします。エラー内容と前回データ使用の有無はGitHub Actionsのログへ記録されます。
+
+公開済み`spacecraft.json`を取得できなかった場合は、前回データなしとして通常のJPL取得を試行します。
 
 `spacecraft.yaml`自体がYAMLとして不正、またはルート形式が異なる場合は、設定ファイル全体の誤りとしてビルドを停止します。
 

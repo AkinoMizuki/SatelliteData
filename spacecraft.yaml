@@ -1,4 +1,8 @@
-# 出力用ID: JPL Horizonsで検索する探査機名
+# 通常: 出力用ID: JPL Horizonsで検索する探査機名
 HAYABUSA2: Hayabusa 2
 JWST: JWST
-TESLA_ROADSTER: Tesla Roadster
+
+# Lookupで検索できない対象のみnameとcommandを指定
+TESLA_ROADSTER:
+  name: Tesla Roadster
+  command: "-143205"
