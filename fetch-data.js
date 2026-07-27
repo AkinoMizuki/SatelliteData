@@ -6,7 +6,7 @@ import { Buffer } from 'node:buffer';
 
 const PAGES_DIRECTORY_PATH = './_site/';
 
-const SPACECRAFT_DEFAULT_START_OFFSET_DAYS = -1;
+const SPACECRAFT_DEFAULT_START_OFFSET_DAYS = 0;
 const SPACECRAFT_DEFAULT_STOP_OFFSET_DAYS = 8;
 const MILLISECONDS_PER_DAY = 86400000;
 
@@ -146,11 +146,12 @@ function resolveSpacecraftUrl(entry, now) {
 
   const startDate = formatUtcDate(addUtcDays(now, startOffsetDays));
   const stopDate = formatUtcDate(addUtcDays(now, stopOffsetDays));
-  const url = entry.url
-    .replaceAll('{START_DATE}', startDate)
-    .replaceAll('{STOP_DATE}', stopDate);
+  const requestUrl = new URL(entry.url);
 
-  return { url, startDate, stopDate };
+  requestUrl.searchParams.set('START_TIME', `'${startDate}'`);
+  requestUrl.searchParams.set('STOP_TIME', `'${stopDate}'`);
+
+  return { url: requestUrl.toString(), startDate, stopDate };
 }
 
 function validateSpacecraftEntry(entry, index) {
@@ -164,8 +165,9 @@ function validateSpacecraftEntry(entry, index) {
     }
   }
 
-  if (!entry.url.includes('{START_DATE}') || !entry.url.includes('{STOP_DATE}')) {
-    throw new Error(`${entry.id} のURLに{START_DATE}と{STOP_DATE}を指定してください。`);
+  const requestUrl = new URL(entry.url);
+  if (requestUrl.searchParams.has('START_TIME') || requestUrl.searchParams.has('STOP_TIME')) {
+    throw new Error(`${entry.id} のURLにはSTART_TIMEとSTOP_TIMEを登録しないでください。取得時に自動設定されます。`);
   }
 }
 
