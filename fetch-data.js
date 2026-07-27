@@ -6,6 +6,236 @@ import { Buffer } from 'node:buffer';
 
 const PAGES_DIRECTORY_PATH = './_site/';
 
+const SPACECRAFT_DEFAULT_START_OFFSET_DAYS = -1;
+const SPACECRAFT_DEFAULT_STOP_OFFSET_DAYS = 8;
+const MILLISECONDS_PER_DAY = 86400000;
+
+function formatUtcDate(date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function addUtcDays(date, days) {
+  return new Date(date.getTime() + days * MILLISECONDS_PER_DAY);
+}
+
+function normalizeQuotedParameter(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.replace(/^'+|'+$/g, '');
+}
+
+function parseCsvLine(line) {
+  const values = [];
+  let value = '';
+  let quoted = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        value += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === ',' && !quoted) {
+      values.push(value.trim());
+      value = '';
+    } else {
+      value += char;
+    }
+  }
+
+  values.push(value.trim());
+  return values;
+}
+
+function parseHorizonsVectorSamples(resultText) {
+  if (typeof resultText !== 'string') {
+    throw new Error('Horizons APIのresultが文字列ではありません。');
+  }
+
+  const startMarker = '$$SOE';
+  const endMarker = '$$EOE';
+  const startIndex = resultText.indexOf(startMarker);
+  const endIndex = resultText.indexOf(endMarker, startIndex + startMarker.length);
+
+  if (startIndex < 0 || endIndex < 0) {
+    throw new Error('Horizons APIのresultに$$SOE/$$EOEがありません。');
+  }
+
+  const dataText = resultText.slice(startIndex + startMarker.length, endIndex);
+  const samples = [];
+
+  for (const line of dataText.split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    const columns = parseCsvLine(line);
+    if (columns.length < 8) {
+      continue;
+    }
+
+    const jd = Number(columns[0]);
+    const x = Number(columns[2]);
+    const y = Number(columns[3]);
+    const z = Number(columns[4]);
+    const vx = Number(columns[5]);
+    const vy = Number(columns[6]);
+    const vz = Number(columns[7]);
+
+    if (![jd, x, y, z, vx, vy, vz].every(Number.isFinite)) {
+      continue;
+    }
+
+    samples.push([jd, x, y, z, vx, vy, vz]);
+  }
+
+  if (samples.length === 0) {
+    throw new Error('Horizons APIのresultから状態ベクトルを取得できませんでした。');
+  }
+
+  return samples;
+}
+
+async function fetchJsonObject(url) {
+  const response = await fetch(url);
+  const responseText = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`${url} の取得に失敗しました。HTTP ${response.status}: ${responseText.slice(0, 500)}`);
+  }
+
+  let parsed;
+
+  try {
+    parsed = JSON.parse(responseText);
+  } catch (error) {
+    throw new Error(`${url} からJSONではないデータが返りました: ${responseText.slice(0, 500)}`);
+  }
+
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error(`${url} からJSONオブジェクトではないデータが返りました。`);
+  }
+
+  if (typeof parsed.error === 'string' && parsed.error.length > 0) {
+    throw new Error(`${url} のHorizons APIエラー: ${parsed.error}`);
+  }
+
+  return parsed;
+}
+
+function resolveSpacecraftUrl(entry, now) {
+  const startOffsetDays = Number.isFinite(entry.startOffsetDays)
+    ? entry.startOffsetDays
+    : SPACECRAFT_DEFAULT_START_OFFSET_DAYS;
+  const stopOffsetDays = Number.isFinite(entry.stopOffsetDays)
+    ? entry.stopOffsetDays
+    : SPACECRAFT_DEFAULT_STOP_OFFSET_DAYS;
+
+  if (stopOffsetDays <= startOffsetDays) {
+    throw new Error(`${entry.id} のstopOffsetDaysはstartOffsetDaysより大きくしてください。`);
+  }
+
+  const startDate = formatUtcDate(addUtcDays(now, startOffsetDays));
+  const stopDate = formatUtcDate(addUtcDays(now, stopOffsetDays));
+  const url = entry.url
+    .replaceAll('{START_DATE}', startDate)
+    .replaceAll('{STOP_DATE}', stopDate);
+
+  return { url, startDate, stopDate };
+}
+
+function validateSpacecraftEntry(entry, index) {
+  if (entry === null || Array.isArray(entry) || typeof entry !== 'object') {
+    throw new Error(`spacecraft.yamlの${index + 1}件目がオブジェクトではありません。`);
+  }
+
+  for (const property of ['id', 'name', 'url']) {
+    if (typeof entry[property] !== 'string' || entry[property].trim().length === 0) {
+      throw new Error(`spacecraft.yamlの${index + 1}件目に有効な${property}がありません。`);
+    }
+  }
+
+  if (!entry.url.includes('{START_DATE}') || !entry.url.includes('{STOP_DATE}')) {
+    throw new Error(`${entry.id} のURLに{START_DATE}と{STOP_DATE}を指定してください。`);
+  }
+}
+
+/**
+ * spacecraft.yaml に書かれたJPL Horizons APIを取得し、
+ * UdonSharpで読み取りやすい状態ベクトル配列へ変換する。
+ *
+ * samplesの並び:
+ * [Julian Date TDB, X, Y, Z, VX, VY, VZ]
+ */
+async function buildSpacecraftJson(pagesDirectory) {
+  const yamlUrl = new URL('spacecraft.yaml', import.meta.url);
+  const entries = yaml.load(await fs.readFile(yamlUrl, { encoding: 'utf-8' }));
+
+  if (!Array.isArray(entries)) {
+    throw new Error('spacecraft.yaml が探査機設定の配列ではありません。');
+  }
+
+  const now = new Date();
+  const objects = [];
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    validateSpacecraftEntry(entry, i);
+
+    const resolved = resolveSpacecraftUrl(entry, now);
+    core.info(`${entry.id} のHorizonsデータを取得します: ${resolved.url}`);
+
+    const payload = await fetchJsonObject(resolved.url);
+    const samples = parseHorizonsVectorSamples(payload.result);
+    const requestUrl = new URL(resolved.url);
+    const parameters = requestUrl.searchParams;
+
+    objects.push({
+      id: entry.id,
+      name: entry.name,
+      source: payload.signature?.source ?? 'NASA/JPL Horizons API',
+      apiVersion: payload.signature?.version ?? '',
+      command: normalizeQuotedParameter(parameters.get('COMMAND')),
+      center: normalizeQuotedParameter(parameters.get('CENTER')),
+      referencePlane: normalizeQuotedParameter(parameters.get('REF_PLANE')),
+      referenceSystem: normalizeQuotedParameter(parameters.get('REF_SYSTEM')),
+      vectorCorrection: normalizeQuotedParameter(parameters.get('VEC_CORR')),
+      units: normalizeQuotedParameter(parameters.get('OUT_UNITS')),
+      timeType: normalizeQuotedParameter(parameters.get('TIME_TYPE')) || 'TDB',
+      startDate: resolved.startDate,
+      stopDate: resolved.stopDate,
+      stepSize: normalizeQuotedParameter(parameters.get('STEP_SIZE')),
+      samples,
+    });
+
+    core.info(`${entry.id} の状態ベクトルを${samples.length}件取得しました。`);
+  }
+
+  const output = {
+    version: 1,
+    generatedUtc: now.toISOString(),
+    sampleFields: ['jdTdb', 'x', 'y', 'z', 'vx', 'vy', 'vz'],
+    objects,
+  };
+
+  await fs.writeFile(
+    new URL('spacecraft.json', pagesDirectory),
+    JSON.stringify(output)
+  );
+
+  core.info(`spacecraft.json を出力しました。探査機数: ${objects.length}`);
+}
+
+
 /**
  * CelesTrakのJSONレスポンスを取得して配列として返す
  * 期待形式:
@@ -161,3 +391,4 @@ await fs.mkdir(pagesDirectory, { recursive: true });
 
 await buildSatellitesText(pagesDirectory);
 await buildSatellitesPng(pagesDirectory);
+await buildSpacecraftJson(pagesDirectory);

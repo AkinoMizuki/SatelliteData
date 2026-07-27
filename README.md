@@ -37,3 +37,46 @@ YAML形式の配列で記述された [satellites.yaml] を書き替えます。
 ※masterブランチへのpush権限が必要。
 
 [satellites.yaml]: ./satellites.yaml
+
+探査機リアルタイムトラッキング用データ
+--------------------------------------
+[JPL Horizons API]から取得した探査機の太陽中心・J2000黄道座標の位置速度ベクトルを、JSON形式で返します。
+
+現在はHAYABUSA2を取得します。
+
+[JPL Horizons API]: https://ssd-api.jpl.nasa.gov/doc/horizons.html
+
+### データ確認用 URL
+https://akinomizuki.github.io/SatelliteData/spacecraft.json
+
+### 更新範囲
+GitHub Actions実行日の前日から8日後までを、1時間間隔で取得します。
+
+`spacecraft.yaml`内のURLにある次のプレースホルダーは、ビルド時に自動置換されます。
+
+- `{START_DATE}`: 実行日の前日
+- `{STOP_DATE}`: 実行日の8日後
+
+### 出力形式
+`spacecraft.json`の各サンプルは、次の順序です。
+
+```text
+[jdTdb, x, y, z, vx, vy, vz]
+```
+
+HAYABUSA2の現在設定では、位置の単位はAU、速度の単位はAU/日です。
+
+### 取得対象の探査機の変更
+YAML形式で記述された [spacecraft.yaml] に、`id`、`name`、Horizons APIの`url`を追加します。
+
+```yaml
+- id: HAYABUSA2
+  name: HAYABUSA2
+  url: "https://ssd.jpl.nasa.gov/api/horizons.api?...&START_TIME=%27{START_DATE}%27&STOP_TIME=%27{STOP_DATE}%27&..."
+```
+
+通常は既存のHAYABUSA2設定を複製し、`id`、`name`、URL内の`COMMAND`を対象探査機へ変更します。
+
+※masterブランチへのpush権限が必要。
+
+[spacecraft.yaml]: ./spacecraft.yaml
