@@ -1,0 +1,26 @@
+name: Keep scheduled workflows active
+
+on:
+  schedule:
+    # Monthly keepalive commit to prevent scheduled workflows from being disabled
+    # after a long period without repository activity.
+    - cron: '37 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Create empty keepalive commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keep scheduled workflows active"
+          git push origin HEAD:master
